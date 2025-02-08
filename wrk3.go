@@ -5,7 +5,6 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"log"
 	"net/http"
 	"os"
@@ -241,7 +240,7 @@ func main() {
 		defer resp.Body.Close()
 
 		// レスポンス Body を読み捨てる (必要に応じて処理を追加)
-		_, err = io.Copy(ioutil.Discard, resp.Body)
+		_, err = io.Copy(io.Discard, resp.Body)
 		if err != nil {
 			fmt.Println("Error reading response body:", err)
 			return err
