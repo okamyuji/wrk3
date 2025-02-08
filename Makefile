@@ -3,7 +3,7 @@ GOLANGCI_LINT := $(BIN_DIR)/golangci-lint
 
 all: build lint test
 
-build: 
+build:
 	##### building #####
 	go build -v
 
@@ -12,7 +12,7 @@ $(GOLANGCI_LINT):
 
 lint: $(GOLANGCI_LINT)
 	##### linting #####
-	golangci-lint run -E golint -E gosec -E gofmt
+	golangci-lint run -E gosec -E gofmt
 
 test:
 	##### testing #####
