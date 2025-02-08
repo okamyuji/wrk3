@@ -2,12 +2,13 @@ package wrk3
 
 import (
 	"context"
+	"crypto/rand"
 	"fmt"
 	"io"
 	"io/ioutil"
 	"log"
 	"math"
-	"math/rand"
+	"math/big"
 	"net/http"
 	"testing"
 	"time"
@@ -79,10 +80,21 @@ func createHTTPLoadFunction(url string, timeout time.Duration) func() error {
 }
 
 func createHTTPServer(addr string) *http.Server {
-	server := &http.Server{Addr: addr, Handler: http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-		time.Sleep(time.Millisecond * time.Duration(rand.Intn(10)))
-		w.WriteHeader(http.StatusOK)
-	})}
+	server := &http.Server{
+		Addr: addr,
+		Handler: http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+			// G404 対応: セキュリティ的に重要な乱数生成が必要な場合は crypto/rand を利用してください。
+			// 今回はテスト用途のため math/rand でも問題ありませんが、gosec の警告に対応するため crypto/rand を利用します。
+			n, err := rand.Int(rand.Reader, big.NewInt(10))
+			if err != nil {
+				panic(err) // 本番環境では適切なエラー処理が必要です。
+			}
+			sleepDuration := time.Millisecond * time.Duration(n.Int64())
+			time.Sleep(sleepDuration)
+			w.WriteHeader(http.StatusOK)
+		}),
+		ReadHeaderTimeout: 10 * time.Second, // G112 対応: Slowloris 攻撃対策
+	}
 
 	go func() {
 		err := server.ListenAndServe()
@@ -112,6 +124,7 @@ func createSlowHTTPServer(addr string) *http.Server {
 			<-resp
 			w.WriteHeader(http.StatusOK)
 		}),
+		ReadHeaderTimeout: 10 * time.Second, // G112 対応: Slowloris 攻撃対策
 	}
 
 	go func() {
