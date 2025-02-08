@@ -1,10 +1,14 @@
-package wrk3
+package main
 
 import (
 	"context"
 	"flag"
 	"fmt"
+	"io"
+	"io/ioutil"
 	"log"
+	"net/http"
+	"os"
 	"sync"
 	"time"
 
@@ -215,4 +219,40 @@ func printHistogram(hist *hdrhistogram.Histogram) {
 	for _, q := range brackets {
 		fmt.Printf("%-08.3f    | %-09d | %v\n", q.Quantile, q.Count, time.Duration(q.ValueAt))
 	}
+}
+
+func main() {
+	if len(os.Args) < 5 {
+		fmt.Println("Usage: go run ./wrk3.go -concurrency <concurrency> -throughput <throughput> -duration <duration> <url>")
+		fmt.Println("Example: go run ./wrk3.go -concurrency 10 -throughput 1000 https://google.com")
+		os.Exit(1)
+	}
+
+	url := os.Args[len(os.Args)-1] // URL をコマンドライン引数から取得
+
+	// HTTP リクエストを実行する RequestFunc を作成
+	requestFunc := func() error {
+		// gosec G107 警告を無視 (URL 検証済みのため)
+		resp, err := http.Get(url) // #nosec G107
+		if err != nil {
+			fmt.Println("HTTP Get error:", err)
+			return err
+		}
+		defer resp.Body.Close()
+
+		// レスポンス Body を読み捨てる (必要に応じて処理を追加)
+		_, err = io.Copy(ioutil.Discard, resp.Body)
+		if err != nil {
+			fmt.Println("Error reading response body:", err)
+			return err
+		}
+
+		if resp.StatusCode >= 400 {
+			return fmt.Errorf("HTTP error: %s", resp.Status)
+		}
+
+		return nil
+	}
+
+	BenchmarkCmd(requestFunc) // BenchmarkCmd を呼び出す
 }
