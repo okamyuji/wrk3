@@ -1,4 +1,4 @@
-package wrk3
+package main
 
 import (
 	"context"
