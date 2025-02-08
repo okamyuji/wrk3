@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -21,6 +22,9 @@ type Benchmark struct {
 	Concurrency int
 	Throughput  float64
 	Duration    time.Duration
+	Method      string
+	Headers     map[string]string
+	Body        string
 	SendRequest RequestFunc
 }
 
@@ -34,25 +38,36 @@ type BenchResult struct {
 }
 
 // BenchmarkCmd is a main function helper that runs the provided target function using the commandline arguments
-func BenchmarkCmd(target RequestFunc) {
-	var concurrency int
-	var throughput float64
-	var duration time.Duration
+func BenchmarkCmd(target RequestFunc, params Benchmark) {
+	fmt.Printf("running benchmark for %v...\n", params.Duration)
+	result := params.Run()
+	PrintBenchResult(params.Throughput, params.Duration, result)
+}
 
-	flag.IntVar(&concurrency, "concurrency", 10, "level of benchmark concurrency")
-	flag.Float64Var(&throughput, "throughput", 10000, "target benchmark throughput")
-	flag.DurationVar(&duration, "duration", 20*time.Second, "benchmark time period")
-	flag.Parse()
+type arrayFlags []string
 
-	fmt.Printf("running benchmark for %v...\n", duration)
-	b := Benchmark{
-		Concurrency: concurrency,
-		Throughput:  throughput,
-		Duration:    duration,
-		SendRequest: target,
+func (i *arrayFlags) String() string {
+	return "my string representation"
+}
+
+func (i *arrayFlags) Set(value string) error {
+	*i = append(*i, value)
+	return nil
+}
+
+func parseHeaders(headers []string) map[string]string {
+	headerMap := make(map[string]string)
+	for _, header := range headers {
+		parts := strings.SplitN(header, ":", 2)
+		if len(parts) != 2 {
+			fmt.Println("Warning: invalid header format:", header)
+			continue
+		}
+		key := strings.TrimSpace(parts[0])
+		value := strings.TrimSpace(parts[1])
+		headerMap[key] = value
 	}
-	result := b.Run()
-	PrintBenchResult(throughput, duration, result)
+	return headerMap
 }
 
 type localResult struct {
@@ -221,31 +236,79 @@ func printHistogram(hist *hdrhistogram.Histogram) {
 }
 
 func main() {
-	if len(os.Args) < 5 {
-		fmt.Println("Usage: go run ./wrk3.go -concurrency <concurrency> -throughput <throughput> -duration <duration> <url>")
-		fmt.Println("Example: go run ./wrk3.go -concurrency 10 -throughput 1000 https://google.com")
+
+	if len(os.Args) < 4 {
+		fmt.Println("Usage: go run ./wrk3.go -c <concurrency> -t <throughput> -d <duration> [options] <url>")
+		fmt.Println("Example: go run ./wrk3.go -c 10 -t 1000 https://google.com")
+		fmt.Println("\nOptions:")
+		fmt.Println("  -c int: Level of benchmark concurrency (default: 10)")
+		fmt.Println("                        Level of benchmark concurrency (default: 10)")
+		fmt.Println("  -t float64: Target benchmark throughput (default: 10000)")
+		fmt.Println("  -d duration: Benchmark time period (default: 20s)")
+		fmt.Println("  -m string: HTTP method (GET, POST, PUT, DELETE, etc.) (default: GET)")
+		fmt.Println("  -h string: HTTP header to send, format is 'key:value'")
+		fmt.Println("  -b string: Request body to send")
 		os.Exit(1)
 	}
 
-	url := os.Args[len(os.Args)-1] // URL をコマンドライン引数から取得
+	var concurrency int
+	var throughput float64
+	var duration time.Duration
+	var method string
+	var headers arrayFlags
+	var body string
 
-	// HTTP リクエストを実行する RequestFunc を作成
+	flag.IntVar(&concurrency, "c", 10, "level of benchmark concurrency")
+	flag.Float64Var(&throughput, "t", 10000, "target benchmark throughput")
+	flag.DurationVar(&duration, "d", 20*time.Second, "benchmark time period")
+	flag.StringVar(&method, "m", "GET", "HTTP method (GET, POST, PUT, DELETE, etc.)")
+	flag.Var(&headers, "h", "HTTP header to send, format is 'key:value'")
+	flag.StringVar(&body, "b", "", "Request body to send")
+	flag.Parse()
+
+	url := os.Args[len(os.Args)-1]
+	if !strings.Contains(url, "http") {
+		fmt.Println("Error: URL is required")
+		os.Exit(1)
+	}
+
+	// create HTTP request function
 	requestFunc := func() error {
-		// gosec G107 警告を無視 (URL 検証済みのため)
-		resp, err := http.Get(url) // #nosec G107
+		client := &http.Client{}
+		req, err := http.NewRequest(method, url, nil) // Body is nil for now
 		if err != nil {
-			fmt.Println("HTTP Get error:", err)
+			fmt.Println("Error creating request:", err)
 			return err
 		}
-		defer resp.Body.Close()
 
-		// レスポンス Body を読み捨てる (必要に応じて処理を追加)
+		if body != "" {
+			req.Body = io.NopCloser(strings.NewReader(body))
+		}
+
+		headerMap := parseHeaders(headers)
+		for key, value := range headerMap {
+			req.Header.Set(key, value)
+		}
+
+		resp, err := client.Do(req)
+
+		if err != nil {
+			fmt.Println("HTTP request error:", err)
+			return err
+		}
+
+		if resp != nil {
+			defer resp.Body.Close()
+		}
+
+		// discard response body (add processing if needed)
 		_, err = io.Copy(io.Discard, resp.Body)
 		if err != nil {
 			fmt.Println("Error reading response body:", err)
 			return err
 		}
 
+		fmt.Println("Status code:", resp.StatusCode)
 		if resp.StatusCode >= 400 {
 			return fmt.Errorf("HTTP error: %s", resp.Status)
 		}
@@ -253,5 +316,15 @@ func main() {
 		return nil
 	}
 
-	BenchmarkCmd(requestFunc) // BenchmarkCmd を呼び出す
+	benchParams := Benchmark{
+		Concurrency: concurrency,
+		Throughput:  throughput,
+		Duration:    duration,
+		Method:      method,
+		Headers:     parseHeaders(headers),
+		Body:        body,
+		SendRequest: requestFunc,
+	}
+
+	BenchmarkCmd(requestFunc, benchParams)
 }
