@@ -16,59 +16,59 @@ import (
 	"golang.org/x/time/rate"
 )
 
-// RequestFunc is a function that returns an error
+// RequestFunc is a function type for sending requests (currently unused)
 type RequestFunc func() error
 
-// Benchmark is a struct that contains the benchmark parameters
+// Benchmark holds benchmark parameters.
 type Benchmark struct {
-	Threads      int
-	Connections  int
-	Rate         float64
-	Duration     time.Duration
-	Timeout      time.Duration
-	Method       string
-	Headers      map[string]string
-	Body         string
-	URL          string
-	SendRequest  RequestFunc
-	PrintLatency bool
+	Threads      int               // Number of threads to use.
+	Connections  int               // Number of connections to keep open.
+	Rate         float64           // Target request rate in requests/sec.
+	Duration     time.Duration     // Duration of the benchmark test.
+	Timeout      time.Duration     // Timeout for HTTP requests.
+	Method       string            // HTTP method (GET, POST, etc.).
+	Headers      map[string]string // HTTP headers to include in requests.
+	Body         string            // Request body.
+	URL          string            // Target URL for benchmarking.
+	PrintLatency bool              // Whether to print detailed latency statistics.
 }
 
-// BenchResult is a struct that contains the benchmark results
+// BenchResult holds the benchmark results.
 type BenchResult struct {
-	Throughput  float64
-	Counter     int
-	Errors      int
-	Omitted     int
-	Latency     *hdrhistogram.Histogram
-	TotalTime   time.Duration
-	Threads     int
-	Connections int
+	Throughput  float64                 // Requests per second.
+	Counter     int                     // Number of successful requests.
+	Errors      int                     // Number of errors (HTTP errors + other errors).
+	Omitted     int                     // Number of requests omitted due to rate limiting.
+	Latency     *hdrhistogram.Histogram // Latency histogram.
+	TotalTime   time.Duration           // Total benchmark execution time.
+	Threads     int                     // Number of threads used.
+	Connections int                     // Number of connections used.
 }
 
-// BenchmarkCmd is a main function helper that runs the provided target function using the commandline arguments
-func BenchmarkCmd(target RequestFunc, params Benchmark) {
+// runBenchmarkCmd executes the benchmark based on command-line parameters.
+func runBenchmarkCmd(params Benchmark) {
 	fmt.Printf("Running %s test @ %s\n", params.Duration, params.URL)
 	fmt.Printf("  %d threads and %d connections\n", params.Threads, params.Connections)
 	result := params.Run()
-	PrintBenchResult(params, result)
+	PrintBenchResult(result, params) // Pass params to PrintBenchResult
 }
 
-// arrayFlags is a type that implements the flag.Value interface
+// arrayFlags is a custom type to handle multiple header flags.
 type arrayFlags []string
 
-// String is a method that returns a string representation of the arrayFlags
-func (i *arrayFlags) String() string {
-	return "my string representation"
-}
-
-// Set is a method that sets the value of the arrayFlags
+// Set appends a flag value to the arrayFlags.
 func (i *arrayFlags) Set(value string) error {
 	*i = append(*i, value)
 	return nil
 }
 
-// parseHeaders is a function that parses the headers
+// String returns a string representation of arrayFlags.
+// This is required to satisfy the flag.Value interface.
+func (i *arrayFlags) String() string {
+	return "" // Return empty string as the default value representation is not needed.
+}
+
+// parseHeaders parses header strings into a map[string]string.
 func parseHeaders(headers []string) map[string]string {
 	headerMap := make(map[string]string)
 	for _, header := range headers {
@@ -84,36 +84,35 @@ func parseHeaders(headers []string) map[string]string {
 	return headerMap
 }
 
-// localResult is a struct that contains the local results
+// localResult holds results for each goroutine.
 type localResult struct {
-	errors  int
-	counter int
-	latency *hdrhistogram.Histogram
+	errors  int                     // Number of errors.
+	counter int                     // Number of successful requests.
+	latency *hdrhistogram.Histogram // Latency histogram.
 }
 
-// executioner is a struct that contains the executioner parameters
+// executioner manages the benchmark execution.
 type executioner struct {
-	eventsGenerator
-	benchmark Benchmark
-	results   chan localResult
-	startTime time.Time
+	eventsGenerator                  // Event generator.
+	benchmark       Benchmark        // Benchmark parameters.
+	results         chan localResult // Channel to collect results from goroutines.
+	startTime       time.Time        // Benchmark start time.
 }
 
-// eventsGenerator is a struct that contains the events generator parameters
+// eventsGenerator generates events for request execution.
 type eventsGenerator struct {
-	lock      sync.Mutex
-	eventsBuf chan time.Time
-	doneCtx   context.Context
-	cancel    context.CancelFunc
-	// omitted value is valid only after the execution is done
-	omitted int
+	lock      sync.Mutex         // Mutex for protecting omitted count.
+	eventsBuf chan time.Time     // Channel to buffer events.
+	doneCtx   context.Context    // Context for signaling completion.
+	cancel    context.CancelFunc // Cancel function for the context.
+	omitted   int                // Number of skipped events due to rate limiting.
 }
 
-// Run is a method that runs the executioner
+// Run executes the benchmark and returns the results.
 func (b Benchmark) Run() BenchResult {
 	execution := b.newExecution()
-	execution.generateEvents(b.Rate, 2*b.Connections*b.Threads) // coordinated omission effect
-	for i := 0; i < b.Connections*b.Threads; i++ {              // coordinated omission effect
+	execution.generateEvents(b.Rate, 2*b.Connections*b.Threads) // Burst size adjusted for Coordinated Omission
+	for i := 0; i < b.Connections*b.Threads; i++ {              // Goroutine count adjusted for Coordinated Omission
 		go execution.sendRequests()
 	}
 
@@ -122,17 +121,17 @@ func (b Benchmark) Run() BenchResult {
 	return execution.summarizeResults()
 }
 
-// newExecution is a method that creates a new executioner
+// newExecution creates a new executioner instance.
 func (b Benchmark) newExecution() *executioner {
 	return &executioner{
-		eventsGenerator: newEventsGenerator(b.Duration, int(b.Rate*10) /*10 sec buffer*/),
+		eventsGenerator: newEventsGenerator(b.Duration, int(b.Rate*10) /*10 seconds buffer*/),
 		benchmark:       b,
-		results:         make(chan localResult, b.Connections*b.Threads), // coordinated omission effect
+		results:         make(chan localResult, b.Connections*b.Threads), // Channel buffer size adjusted for Coordinated Omission
 		startTime:       time.Now(),
 	}
 }
 
-// newEventsGenerator is a function that creates a new events generator
+// newEventsGenerator creates a new eventsGenerator instance.
 func newEventsGenerator(duration time.Duration, bufSize int) eventsGenerator {
 	doneCtx, cancel := context.WithTimeout(context.Background(), duration)
 	return eventsGenerator{
@@ -143,40 +142,40 @@ func newEventsGenerator(duration time.Duration, bufSize int) eventsGenerator {
 	}
 }
 
-// generateEvents is a method that generates events
+// generateEvents generates events at the specified throughput and sends them to the eventsBuf channel.
 func (e *eventsGenerator) generateEvents(throughput float64, burstSize int) {
 	go func() {
 		omitted := 0
 		rateLimiter := rate.NewLimiter(rate.Limit(throughput), burstSize)
 		for err := rateLimiter.Wait(e.doneCtx); err == nil; err = rateLimiter.Wait(e.doneCtx) {
 			select {
-			case e.eventsBuf <- time.Now():
+			case e.eventsBuf <- time.Now(): // Send event time to the channel
 			default:
-				omitted++
+				omitted++ // Skip event if channel is blocked (rate limited)
 			}
 		}
 
-		close(e.eventsBuf)
+		close(e.eventsBuf) // Signal event generation completion
 		e.lock.Lock()
 		e.omitted = omitted
 		e.lock.Unlock()
 	}()
 }
 
-// omittedCount is a method that returns the number of omitted events
+// omittedCount returns the number of skipped events.
 func (e *eventsGenerator) omittedCount() int {
 	e.lock.Lock()
 	defer e.lock.Unlock()
 	return e.omitted
 }
 
-// awaitDone is a method that waits for the done context to be done
+// awaitDone waits for the completion context to be done.
 func (e *eventsGenerator) awaitDone() {
 	<-e.doneCtx.Done()
-	e.cancel()
+	e.cancel() // Cancel the context
 }
 
-// sendRequests is a method that sends requests
+// sendRequests is the goroutine that sends HTTP requests.
 func (e *executioner) sendRequests() {
 	res := localResult{
 		errors:  0,
@@ -184,72 +183,75 @@ func (e *executioner) sendRequests() {
 		latency: createHistogram(),
 	}
 
-	client := &http.Client{Timeout: e.benchmark.Timeout}                  // apply timeout
-	req, err := http.NewRequest(e.benchmark.Method, e.benchmark.URL, nil) // generate request
+	client := &http.Client{Timeout: e.benchmark.Timeout}                  // Apply timeout setting
+	req, err := http.NewRequest(e.benchmark.Method, e.benchmark.URL, nil) // Create HTTP request
 	if err != nil {
-		fmt.Println("Error creating request:", err) // error handling
-		res.errors++                                // request creation error is also counted as an error
+		fmt.Println("Error creating request:", err) // Request creation error
+		res.errors++                                // Count request creation error as an error
 		e.results <- res
 		return
 	}
 
 	if e.benchmark.Body != "" {
-		req.Body = io.NopCloser(strings.NewReader(e.benchmark.Body)) // set request body
+		req.Body = io.NopCloser(strings.NewReader(e.benchmark.Body)) // Set request body
 	}
 
 	for key, value := range e.benchmark.Headers {
-		req.Header.Set(key, value) // set headers
+		req.Header.Set(key, value) // Set headers
 	}
 
 	done := false
 	for !done {
 		select {
-		case <-e.doneCtx.Done():
+		case <-e.doneCtx.Done(): // Completion signal received
 			done = true
-		case _, ok := <-e.eventsBuf:
+		case _, ok := <-e.eventsBuf: // Event received from the event channel
 			if ok {
 				res.counter++
-				startTime := time.Now()          // record request start time
-				resp, err := client.Do(req)      // send request
-				elapsed := time.Since(startTime) // measure request time
+				startTime := time.Now()          // Record request start time
+				resp, err := client.Do(req)      // Send HTTP request
+				elapsed := time.Since(startTime) // Measure request processing time
 
 				if err != nil {
 					res.errors++
-					log.Println("HTTP request error:", err) // output error log
+					log.Printf("HTTP request error: %v, URL: %s\n", err, e.benchmark.URL) // Log HTTP request error (including URL)
 				} else {
 					if resp != nil {
 						defer resp.Body.Close()
-						if _, err := io.Copy(io.Discard, resp.Body); err != nil { // discard response body
-							log.Println("Error reading response body:", err) // output error log
-							res.errors++                                     // response body read error is also counted as an error
+						_, err := io.Copy(io.Discard, resp.Body) // Discard response body
+						if err != nil {
+							log.Printf("Error reading response body: %v, URL: %s\n", err, e.benchmark.URL) // Log response body read error
+							res.errors++                                                                   // Count response body read error as an error
 						}
 						if resp.StatusCode >= 400 {
-							res.errors++ // status code 400 or higher is also counted as an error
+							res.errors++                                                                          // Count HTTP status code >= 400 as an error
+							log.Printf("HTTP error status code: %d, URL: %s\n", resp.StatusCode, e.benchmark.URL) // Log HTTP error (status code and URL)
 						}
 					} else {
-						res.errors++ // response is nil, so it is also counted as an error
+						res.errors++                                                   // Count nil response as an error
+						log.Printf("HTTP response is nil, URL: %s\n", e.benchmark.URL) // Log nil response error
 					}
 				}
 
-				if err := res.latency.RecordValue(int64(elapsed)); err != nil { // record latency
-					log.Println("failed to record latency", err) // output error log
+				if recordErr := res.latency.RecordValue(int64(elapsed)); recordErr != nil { // Record latency
+					log.Printf("failed to record latency: %v\n", recordErr) // Log latency recording error
 				}
 			} else {
-				done = true
+				done = true // Exit if event channel is closed
 			}
 		}
 	}
 
-	e.results <- res
+	e.results <- res // Send local results to the results channel
 }
 
-// summarizeResults is a method that summarizes the results
+// summarizeResults aggregates results from all goroutines and returns BenchResult.
 func (e *executioner) summarizeResults() BenchResult {
 	counter := 0
 	errors := 0
 	latency := createHistogram()
 
-	for i := 0; i < e.benchmark.Connections*e.benchmark.Threads; i++ { // consider thread number
+	for i := 0; i < e.benchmark.Connections*e.benchmark.Threads; i++ { // Collect results from all goroutines
 		localRes := <-e.results
 		counter += localRes.counter
 		errors += localRes.errors
@@ -265,26 +267,26 @@ func (e *executioner) summarizeResults() BenchResult {
 		Omitted:     e.omittedCount(),
 		Latency:     latency,
 		TotalTime:   totalTime,
-		Threads:     e.benchmark.Threads,     // include thread number in result
-		Connections: e.benchmark.Connections, // include connection number in result
+		Threads:     e.benchmark.Threads,     // Include thread count in results
+		Connections: e.benchmark.Connections, // Include connection count in results
 	}
 }
 
-// createHistogram creates a new histogram with a range of 0 to 1 minute and a precision of 3
+// createHistogram creates a new histogram for latency measurement.
 func createHistogram() *hdrhistogram.Histogram {
-	return hdrhistogram.New(0, int64(time.Minute), 3)
+	return hdrhistogram.New(0, int64(time.Minute), 3) // Range from 0ns to 1 minute, 3 digits precision
 }
 
-// PrintBenchResult is a function that prints the benchmark results
-func PrintBenchResult(params Benchmark, result BenchResult) { // add params as an argument
+// PrintBenchResult formats and prints the benchmark results.
+func PrintBenchResult(result BenchResult, params Benchmark) { // params added as argument
 	fmt.Printf("\n")
 	fmt.Printf("Running %s test @ %s\n", params.Duration, params.URL)
 	fmt.Printf("  %d threads and %d connections\n", params.Threads, params.Connections)
 
 	if result.Errors > 0 || result.Omitted > 0 {
-		fmt.Printf("  Socket errors: %d reads, %d writes, %d connects, %d timeouts\n", 0, 0, 0, result.Errors)
+		fmt.Printf("  Socket errors: %d reads, %d writes, %d connects, %d timeouts\n", 0, 0, 0, result.Errors) // Socket error types not distinguished yet (improvement needed)
 		if result.Omitted > 0 {
-			fmt.Printf("  Non-2xx or 3xx responses: %d\n", result.Errors)
+			fmt.Printf("  Non-2xx or 3xx responses: %d\n", result.Errors) // HTTP errors and other errors not distinguished yet (improvement needed)
 			fmt.Printf("  Omitted requests: %d\n", result.Omitted)
 		}
 
@@ -293,12 +295,12 @@ func PrintBenchResult(params Benchmark, result BenchResult) { // add params as a
 	fmt.Println()
 	fmt.Println("Thread Stats   Avg      Stdev     Max   +/- Stdev")
 
-	// calculate average latency, standard deviation, and maximum latency
+	// Calculate average latency, standard deviation, and max latency.
 	avgLatency := time.Duration(result.Latency.Mean())
 	stdDevLatency := time.Duration(result.Latency.StdDev())
 	maxLatency := time.Duration(result.Latency.Max())
 
-	// calculate +/- Stdev
+	// Calculate +/- Stdev.
 	plusMinusStdev := float64(stdDevLatency) / float64(avgLatency) * 100.0
 
 	fmt.Printf("  Latency   %8s %8s %8s %6.2f%%\n",
@@ -307,10 +309,10 @@ func PrintBenchResult(params Benchmark, result BenchResult) { // add params as a
 		maxLatency,
 		plusMinusStdev,
 	)
-	fmt.Printf("  Req/Sec    %8.2f %8.2f %8.2f %6.2f%%\n", // match wrk2 output format (Req/Sec's Stdev, Max are not implemented, so the average value is displayed)
-		result.Throughput/float64(params.Threads), // average Req/Sec per thread (approximate value)
+	fmt.Printf("  Req/Sec    %8.2f %8.2f %8.2f %6.2f%%\n", // Mimic wrk2 output format (Stdev, Max of Req/Sec are not implemented, showing average)
+		result.Throughput/float64(params.Threads), // Average Req/Sec per thread (approximate)
 		0.0, // Stdev (not implemented)
-		result.Throughput/float64(params.Threads), // Max (not implemented, so the average value is displayed)
+		result.Throughput/float64(params.Threads), // Max (not implemented, showing average)
 		0.0, // +/- Stdev (not implemented)
 	)
 	fmt.Println()
@@ -319,11 +321,10 @@ func PrintBenchResult(params Benchmark, result BenchResult) { // add params as a
 
 	fmt.Printf("\n")
 	fmt.Printf("  Requests/sec: %10.2f\n", result.Throughput)
-	// Transfer/sec は未実装
-	fmt.Printf("  Transfer/sec: %10.2fMB\n", 0.0) // match wrk2 output format (not implemented, so 0.0MB is displayed)
+	fmt.Printf("  Transfer/sec: %10.2fMB\n", 0.0) // Mimic wrk2 output format (not implemented, showing 0.0MB)
 }
 
-// printHistogram is a function that prints the histogram
+// printHistogram prints the histogram in a specified format.
 func printHistogram(hist *hdrhistogram.Histogram) {
 
 	fmt.Println("    50%    ", time.Duration(hist.ValueAtQuantile(50.0)))
@@ -335,7 +336,6 @@ func printHistogram(hist *hdrhistogram.Histogram) {
 	fmt.Println("   100%    ", time.Duration(hist.ValueAtQuantile(100.0)))
 }
 
-// main is the main function
 func main() {
 	var connections int
 	var threads int
@@ -380,25 +380,34 @@ func main() {
 	flag.Parse()
 
 	if versionFlag {
-		fmt.Println("wrk3 modified by Okamyuji (Go version)") // display version information
+		fmt.Println("wrk3 modified by Okamyuji (Go version)") // Display version information
 		os.Exit(0)
 	}
 
 	if len(flag.Args()) < 1 {
-		fmt.Println("Usage: wrk3 [options] <url>") // display usage information
+		fmt.Println("Usage: wrk3 [options] <url>") // Display usage information
 		flag.PrintDefaults()
 		os.Exit(1)
 	}
 
 	url := flag.Args()[0]
 	if !strings.HasPrefix(url, "http://") && !strings.HasPrefix(url, "https://") {
-		fmt.Println("Error: URL must start with http:// or https://") // fix error message
+		fmt.Println("Error: URL must start with http:// or https://") // Corrected error message
 		os.Exit(1)
 	}
 
-	// create HTTP request function
-	requestFunc := func() error {
-		return nil // request sending process is moved to sendRequests
+	// Input value validation
+	if connections <= 0 {
+		fmt.Println("Error: connections must be greater than 0")
+		os.Exit(1)
+	}
+	if threads <= 0 {
+		fmt.Println("Error: threads must be greater than 0")
+		os.Exit(1)
+	}
+	if rateLimit < 0 {
+		fmt.Println("Error: rate must be non-negative")
+		os.Exit(1)
 	}
 
 	benchParams := Benchmark{
@@ -410,10 +419,9 @@ func main() {
 		Method:       method,
 		Headers:      parseHeaders(headers),
 		Body:         body,
-		URL:          url, // set URL to Benchmark struct
-		SendRequest:  requestFunc,
-		PrintLatency: printLatency, // set latency detail display flag
+		URL:          url,          // Set URL to Benchmark struct
+		PrintLatency: printLatency, // Set latency detail print flag
 	}
 
-	BenchmarkCmd(requestFunc, benchParams)
+	runBenchmarkCmd(benchParams) // Call benchmark execution function
 }
