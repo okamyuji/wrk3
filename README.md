@@ -12,7 +12,7 @@ A golang generic benchmarking tool based mostly on Gil Tene's wrk2, only rewritt
 This fork includes significant improvements to the HTTP benchmarking capabilities:
 
 - Enhanced command-line interface with support for HTTP method specification (`-m`)
-- Custom header support (`-h "Key: Value"`)
+- Custom header support (`-H "Key: Value"`)
 - Request body support (`-b`) for POST/PUT operations
 - Improved error handling and status code validation
 - Cleaner dependency injection pattern for benchmark parameters
@@ -101,34 +101,50 @@ Print latency statistics
 
 Print version information
 
-## Example
+## Examples
 
-Basic benchmark with rate limiting
+Basic benchmark with rate limiting:
 
 ```sh
-wrk3 -c 10 -t 2 -r 100 -d 30s "http://localhost:8080/post"
+wrk3 -c 10 -t 2 -r 100 -d 30s http://localhost:8080/
 ```
 
-Benchmark with custom headers and method
+**Example of GET request:**
+
+A basic example of performing a GET request to the root path (`/`).
 
 ```sh
-wrk3 -c 50 -t 4 -H "Authorization: Bearer token" -m POST "http://localhost:8080/post"
+wrk3 -t 2 -c 10 -d 10s -r 100 http://localhost:8080/
+```
+
+**Example of POST request:**
+
+An example of performing a POST request to the `/post` path, setting the request body to `"Hello, POST!"`.
+
+```sh
+wrk3 -t 2 -c 10 -d 10s -r 100 -m POST -b "Hello, POST!" http://localhost:8080/post
+```
+
+Benchmark with custom headers and method:
+
+```sh
+wrk3 -c 50 -t 4 -H "Authorization: Bearer token" -m POST http://localhost:8080/post
 ```
 
 ## Output
 
-The tool provides detailed statistics including
+The tool provides detailed statistics including:
 
 - Request throughput
 - Total requests processed
 - Error count
-- Latency distribution (when --latency is enabled)
+- Latency distribution (when `--latency` is enabled)
 - Connection and thread counts
 - Test duration
 
 ## Testing
 
-The test suite includes several key test cases
+The test suite includes several key test cases:
 
 - Basic HTTP benchmarking functionality
 - Rate limiting verification
@@ -136,7 +152,7 @@ The test suite includes several key test cases
 - Request error handling
 - Result summarization
 
-To run tests
+To run tests:
 
 ```sh
 make test
@@ -149,6 +165,10 @@ make test
 - Handles coordinated omission through event generation
 - Supports concurrent connections through goroutines
 - Provides comprehensive error handling and reporting
+- Supports HTTP methods (`GET`, `POST`, `PUT`, `DELETE`, etc.)
+- Supports custom HTTP headers
+- Supports request body (`-b` option)
+- Supports request timeout (`-T` option)
 
 ## License
 
