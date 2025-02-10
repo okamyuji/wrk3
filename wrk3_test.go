@@ -3,8 +3,6 @@ package main
 import (
 	"context"
 	"crypto/rand"
-	"fmt"
-	"io"
 	"log"
 	"math"
 	"math/big"
@@ -15,28 +13,7 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-func createHTTPLoadFunction(url string, timeout time.Duration) func() error {
-	client := &http.Client{
-		Transport: &http.Transport{
-			MaxConnsPerHost: 200,
-		},
-		Timeout: timeout,
-	}
-
-	return func() error {
-		resp, err := client.Get(url)
-		if resp != nil {
-			_, _ = io.Copy(io.Discard, resp.Body)
-			_ = resp.Body.Close()
-		}
-
-		if err != nil {
-			fmt.Println("error sending get request:", err)
-		}
-		return err
-	}
-}
-
+// createHTTPServer creates a simple HTTP server for testing.
 func createHTTPServer(addr string) *http.Server {
 	server := &http.Server{
 		Addr: addr,
@@ -62,6 +39,7 @@ func createHTTPServer(addr string) *http.Server {
 	return server
 }
 
+// createSlowHTTPServer creates a slow HTTP server for testing latency.
 func createSlowHTTPServer(addr string) *http.Server {
 	server := &http.Server{
 		Addr: addr,
@@ -83,6 +61,7 @@ func createSlowHTTPServer(addr string) *http.Server {
 	return server
 }
 
+// TestBasicHttpBench tests basic HTTP benchmark functionality.
 func TestBasicHttpBench(t *testing.T) {
 	server := createHTTPServer(":8080")
 	expectedThroughput := float64(1000)
@@ -92,8 +71,8 @@ func TestBasicHttpBench(t *testing.T) {
 		Threads:     1,
 		Rate:        expectedThroughput,
 		Duration:    expectedDuration,
-		SendRequest: createHTTPLoadFunction("http://localhost:8080/", 100*time.Millisecond),
-		URL:         "http://localhost:8080/",
+		URL:         "http://localhost:8080/", // SendRequest field removed
+		Timeout:     100 * time.Millisecond,
 	}.Run()
 
 	assert.Equal(t, expectedThroughput/100, math.Round(benchResult.Throughput/100), "Throughput")
@@ -105,6 +84,7 @@ func TestBasicHttpBench(t *testing.T) {
 	_ = server.Shutdown(context.Background())
 }
 
+// TestHighLatencyServer tests benchmark with a high latency server.
 func TestHighLatencyServer(t *testing.T) {
 	server := createSlowHTTPServer(":8082")
 	defer func() {
@@ -120,8 +100,8 @@ func TestHighLatencyServer(t *testing.T) {
 		Connections: 2,
 		Threads:     1,
 		Duration:    5 * time.Second,
-		SendRequest: createHTTPLoadFunction("http://localhost:8082/", 2*time.Second),
-		URL:         "http://localhost:8082/",
+		URL:         "http://localhost:8082/", // SendRequest field removed
+		Timeout:     2 * time.Second,
 	}.Run()
 
 	// verify server processing capability
@@ -129,6 +109,7 @@ func TestHighLatencyServer(t *testing.T) {
 		"throughput should be limited by server latency (500ms)")
 }
 
+// TestEventsGenerator tests the event generator functionality.
 func TestEventsGenerator(t *testing.T) {
 	throughput := 1000.0
 	expectedDuration := 50 * time.Millisecond
@@ -140,6 +121,7 @@ func TestEventsGenerator(t *testing.T) {
 		"should have omitted events due to buffer limitation")
 }
 
+// TestSendRequestsWithErrors tests request sending with forced errors.
 func TestSendRequestsWithErrors(t *testing.T) {
 	expectedErrors := 5
 	events := make(chan time.Time, expectedErrors)
@@ -154,9 +136,9 @@ func TestSendRequestsWithErrors(t *testing.T) {
 			eventsBuf: events,
 		},
 		benchmark: Benchmark{
-			SendRequest: func() error {
-				return fmt.Errorf("test error")
-			},
+			URL:     "http://localhost:8082/", // URL is needed for error log in sendRequests
+			Timeout: 50 * time.Millisecond,    // Timeout is needed for client creation in sendRequests
+			Method:  "GET",                    // Method is needed for request creation
 		},
 		startTime: time.Now(),
 	}
@@ -166,13 +148,18 @@ func TestSendRequestsWithErrors(t *testing.T) {
 	}
 	close(events)
 
-	go e.sendRequests()
+	go func() {
+		// sendRequests内でerrorRequestFuncを呼び出すのではなく、
+		// HTTPリクエスト自体は実行されるが、レスポンス処理でエラーをカウントさせる
+		e.sendRequests()
+	}()
 
 	result := <-e.results
 	assert.Equal(t, expectedErrors, result.errors, "errors")
-	assert.Equal(t, expectedErrors, result.counter, "count")
+	assert.Equal(t, expectedErrors, result.counter, "count") // counterもerrorsと同じ数になることを期待
 }
 
+// TestSendRequests tests successful request sending.
 func TestSendRequests(t *testing.T) {
 	expectedResults := 5
 	events := make(chan time.Time, expectedResults)
@@ -198,9 +185,9 @@ func TestSendRequests(t *testing.T) {
 			eventsBuf: events,
 		},
 		benchmark: Benchmark{
-			SendRequest: createHTTPLoadFunction("http://localhost:8082/", 50*time.Millisecond),
-			URL:         "http://localhost:8082/",
-			Rate:        1, // レート制限を追加
+			URL:     "http://localhost:8082/",
+			Rate:    1, // レート制限を追加
+			Timeout: 50 * time.Millisecond,
 		},
 		startTime: time.Now(),
 	}
@@ -211,12 +198,17 @@ func TestSendRequests(t *testing.T) {
 	}
 	close(events)
 
-	go e.sendRequests()
+	go func() {
+		// sendRequests内でnormalRequestFuncを呼び出すのではなく、
+		// HTTPリクエスト自体は実行され、正常なレスポンスが返ってくることを期待する
+		e.sendRequests()
+	}()
 	result := <-e.results
 	assert.Equal(t, 0, result.errors, "errors")
 	assert.Equal(t, expectedResults, result.counter, "count")
 }
 
+// TestSummarizeResults tests results summarization.
 func TestSummarizeResults(t *testing.T) {
 	expectedResults := 5
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
